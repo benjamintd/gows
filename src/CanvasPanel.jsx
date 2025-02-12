@@ -18,21 +18,19 @@ function CanvasPanel({ panel, ws, userColor, onMount }) {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const observer = new IntersectionObserver(
-      (entries, observer) => {
+      (entries) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting) {
-            // Build and send a 2-byte request message:
+            // Build and send a 3-byte request message:
             //  Byte 0: MsgTypeRequest (2)
-            //  Byte 1: panel number
+            //  Bytes 1-2: panel number (uint16, BigEndian)
             if (ws && ws.readyState === WebSocket.OPEN) {
-              const buffer = new ArrayBuffer(2);
+              const buffer = new ArrayBuffer(3);
               const view = new DataView(buffer);
               view.setUint8(0, 2); // MsgTypeRequest
-              view.setUint8(1, panel);
+              view.setUint16(1, panel);
               ws.send(buffer);
             }
-            // Once requested, we can unobserve this element.
-            observer.unobserve(entry.target);
           }
         });
       },
@@ -52,28 +50,22 @@ function CanvasPanel({ panel, ws, userColor, onMount }) {
     const x = Math.floor((e.clientX - rect.left) * scaleX);
     const y = Math.floor((e.clientY - rect.top) * scaleY);
 
-    // Draw immediately on the canvas.
+    // Draw immediately on the canvas using the assigned color.
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = `rgb(${userColor.r}, ${userColor.g}, ${userColor.b})`;
     ctx.fillRect(x, y, 1, 1);
 
-    // Prepare a 7-byte update message:
+    // Prepare a 5-byte update message:
     //  Byte 0: MsgTypeUpdate (1)
-    //  Byte 1: panel number
-    //  Byte 2: x-coordinate
-    //  Byte 3: y-coordinate
-    //  Byte 4: red
-    //  Byte 5: green
-    //  Byte 6: blue
-    const buffer = new ArrayBuffer(7);
+    //  Bytes 1-2: panel number (uint16, BigEndian)
+    //  Byte 3: x-coordinate
+    //  Byte 4: y-coordinate
+    const buffer = new ArrayBuffer(5);
     const view = new DataView(buffer);
     view.setUint8(0, 1); // MsgTypeUpdate
-    view.setUint8(1, panel);
-    view.setUint8(2, x);
-    view.setUint8(3, y);
-    view.setUint8(4, userColor.r);
-    view.setUint8(5, userColor.g);
-    view.setUint8(6, userColor.b);
+    view.setUint16(1, panel);
+    view.setUint8(3, x);
+    view.setUint8(4, y);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(buffer);
     }
@@ -81,10 +73,12 @@ function CanvasPanel({ panel, ws, userColor, onMount }) {
 
   return (
     <canvas
+      className="w-full h-full image-rendering-pixelated"
       ref={canvasRef}
+      width={128}
+      height={128}
       data-panel={panel}
       onMouseMove={handleMouseMove}
-      className="image-rendering-pixelated"
     />
   );
 }

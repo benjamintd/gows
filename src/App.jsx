@@ -1,19 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
 import CanvasPanel from "./CanvasPanel";
 
-const NUM_PANELS = 1920;
+const NUM_PANELS = 840;
 const CANVAS_SIZE = 128;
 
 function App() {
   const [ws, setWs] = useState(null);
-  // We'll store a mapping of panel number to its canvas element.
+  const [assignedColor, setAssignedColor] = useState(null);
+  // Mapping of panel number to its canvas element.
   const canvasesRef = useRef([]);
-  // Assign a random color to the user (remains constant).
-  const userColor = useRef({
-    r: Math.floor(Math.random() * 256),
-    g: Math.floor(Math.random() * 256),
-    b: Math.floor(Math.random() * 256),
-  });
 
   // Callback to capture the canvas element for each panel.
   const handleCanvasMount = (panel, canvas) => {
@@ -39,14 +34,24 @@ function App() {
       const view = new DataView(buffer);
       const msgType = view.getUint8(0);
 
-      // Handle broadcast update messages (15 bytes).
-      if (msgType === 4 && buffer.byteLength === 15) {
-        const panel = view.getUint8(1);
-        const x = view.getUint8(2);
-        const y = view.getUint8(3);
-        const r = view.getUint8(4);
-        const g = view.getUint8(5);
-        const b = view.getUint8(6);
+      // Handle assign-color message (4 bytes).
+      if (msgType === 6 && buffer.byteLength === 4) {
+        const r = view.getUint8(1);
+        const g = view.getUint8(2);
+        const b = view.getUint8(3);
+        setAssignedColor({ r, g, b });
+        console.log("Assigned color from server:", { r, g, b });
+        return;
+      }
+
+      // Handle broadcast update messages (16 bytes).
+      if (msgType === 4 && buffer.byteLength === 16) {
+        const panel = view.getUint16(1);
+        const x = view.getUint8(3);
+        const y = view.getUint8(4);
+        const r = view.getUint8(5);
+        const g = view.getUint8(6);
+        const b = view.getUint8(7);
         const canvas = canvasesRef.current[panel];
         if (canvas) {
           const ctx = canvas.getContext("2d");
@@ -54,17 +59,17 @@ function App() {
           ctx.fillRect(x, y, 1, 1);
         }
       }
-      // Handle full panel sync messages (2-byte header + 128×128×3 bytes).
+      // Handle full panel sync messages (3-byte header + 128×128×3 bytes).
       else if (
         msgType === 5 &&
-        buffer.byteLength === 2 + CANVAS_SIZE * CANVAS_SIZE * 3
+        buffer.byteLength === 3 + CANVAS_SIZE * CANVAS_SIZE * 3
       ) {
-        const panel = view.getUint8(1);
+        const panel = view.getUint16(1);
         const canvas = canvasesRef.current[panel];
         if (canvas) {
           const ctx = canvas.getContext("2d");
           const imageData = ctx.createImageData(CANVAS_SIZE, CANVAS_SIZE);
-          let srcIdx = 2;
+          let srcIdx = 3;
           for (let i = 0; i < imageData.data.length; i += 4) {
             imageData.data[i] = view.getUint8(srcIdx);
             imageData.data[i + 1] = view.getUint8(srcIdx + 1);
@@ -86,20 +91,25 @@ function App() {
 
   return (
     <div className="min-h-screen flex flex-col items-center bg-black">
-      <div
-        className="border-2 w-12 h-4 border-white m-4 rounded-lg"
-        style={{
-          backgroundColor: `rgb(${userColor.current.r}, ${userColor.current.g}, ${userColor.current.b})`,
-        }}
-      ></div>
-      {/* Adjust grid columns as needed; here we use 10 columns */}
-      <div className="grid grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-0">
+      <div className="m-6">
+        {assignedColor && (
+          <div
+            className="fixed top-6 mx-auto w-12 h-6 rounded-lg border border-white"
+            style={{
+              backgroundColor: `rgb(${assignedColor.r}, ${assignedColor.g}, ${assignedColor.b})`,
+            }}
+          />
+        )}
+      </div>
+      {/* Grid layout: adjust as needed */}
+      <div className="w-full grid grid-cols-3 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-8 gap-0">
         {Array.from({ length: NUM_PANELS }).map((_, i) => (
           <CanvasPanel
             key={i}
             panel={i}
             ws={ws}
-            userColor={userColor.current}
+            // Pass the assigned color once received, or a default if not yet assigned.
+            userColor={assignedColor || { r: 255, g: 255, b: 255 }}
             onMount={handleCanvasMount}
           />
         ))}

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"log"
+	"math/rand"
 	"net/http"
 	"sync"
 	"time"
@@ -12,18 +13,19 @@ import (
 
 const (
 	panelSize  = 128
-	numPanels  = 1920
+	numPanels  = 840
 	writeWait  = 10 * time.Second
 	pongWait   = 60 * time.Second
 	pingPeriod = (pongWait * 9) / 10
 	maxMsgSize = 512
 
 	// Message type constants:
-	MsgTypeUpdate    = 1 // Client → Server: 7 bytes: type, panel, x, y, r, g, b.
-	MsgTypeRequest   = 2 // (Not used here; could be used to ask for a refresh.)
-	MsgTypeUpdateAck = 3 // Server → Client: 2 bytes: type, result.
-	MsgTypeBroadcast = 4 // Server → Client: 15 bytes: type, panel, x, y, r, g, b, timestamp (8 bytes).
-	MsgTypePanelSync = 5 // Server → Client: 2-byte header (type, panel) + 128×128×3 bytes of raw RGB.
+	MsgTypeUpdate      = 1 // Client → Server: 5 bytes: type, panel (2), x, y.
+	MsgTypeRequest     = 2 // Client → Server: 3 bytes: type, panel (2)
+	MsgTypeUpdateAck   = 3 // Server → Client: 2 bytes: type, result.
+	MsgTypeBroadcast   = 4 // Server → Client: 16 bytes: type, panel (2), x, y, r, g, b, timestamp (8 bytes).
+	MsgTypePanelSync   = 5 // Server → Client: 3-byte header (type, panel (2)) + 128×128×3 bytes of raw RGB.
+	MsgTypeAssignColor = 6 // Server → Client: 4 bytes: type, r, g, b.
 )
 
 // Pixel holds a color (R, G, B) and a timestamp.
@@ -43,6 +45,16 @@ var panelMutex sync.RWMutex
 type OutgoingMessage struct {
 	messageType int
 	data        []byte
+}
+
+// Client represents a connected websocket client.
+type Client struct {
+	hub   *Hub
+	conn  *websocket.Conn
+	send  chan OutgoingMessage
+	color struct {
+		R, G, B byte
+	}
 }
 
 // Hub maintains the set of connected clients.
@@ -92,53 +104,61 @@ func (h *Hub) run() {
 	}
 }
 
-// Client represents a connected websocket client.
-type Client struct {
-	hub  *Hub
-	conn *websocket.Conn
-	send chan OutgoingMessage
-}
-
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	// In production, you should check the origin.
+	// In production, check the origin as needed.
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// serveWs upgrades the HTTP connection to a websocket, registers the client,
-// and sends a full sync of all panels.
+// serveWs upgrades the HTTP connection to a websocket, assigns a random color,
+// sends an assign-color message to the client, and registers the client.
 func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("Upgrade error:", err)
 		return
 	}
+	log.Println("Client connected")
 	client := &Client{
 		hub:  hub,
 		conn: conn,
 		send: make(chan OutgoingMessage, 256),
 	}
+	// Assign a random color to this client.
+	client.color.R = byte(rand.Intn(256))
+	client.color.G = byte(rand.Intn(256))
+	client.color.B = byte(rand.Intn(256))
+
+	// Send an assign-color message (4 bytes: type, r, g, b).
+	assignMsg := make([]byte, 4)
+	assignMsg[0] = MsgTypeAssignColor
+	assignMsg[1] = client.color.R
+	assignMsg[2] = client.color.G
+	assignMsg[3] = client.color.B
+	client.send <- OutgoingMessage{messageType: websocket.BinaryMessage, data: assignMsg}
+
 	hub.register <- client
 
-	// When a new client connects, send a full-panel sync for each panel.
-	syncPanels(client)
+	// (Optionally, you could send an initial full-panel sync here.)
+	// syncPanels(client)
 
 	go client.writePump()
 	go client.readPump()
 }
 
-// syncPanels sends, for each panel, a message that includes the panel number and
-// the raw RGB data (128×128×3 bytes). The message layout is:
+// syncPanels sends a full-panel sync for every panel.
+// Message layout:
 //   Byte 0: MsgTypePanelSync (5)
-//   Byte 1: Panel number (0–9)
-//   Bytes 2..(2+49152-1): 128×128×3 bytes of pixel data.
+//   Bytes 1-2: Panel number (uint16)
+//   Bytes 3...: 128×128×3 bytes of pixel data.
 func syncPanels(c *Client) {
 	for panel := 0; panel < numPanels; panel++ {
-		buf := make([]byte, 2+panelSize*panelSize*3)
+		buf := make([]byte, 3+panelSize*panelSize*3)
 		buf[0] = MsgTypePanelSync
-		buf[1] = byte(panel)
-		idx := 2
+		binary.BigEndian.PutUint16(buf[1:3], uint16(panel))
+		log.Printf("Sending full sync for panel %d to client\n", panel)
+		idx := 3
 		panelMutex.RLock()
 		for y := 0; y < panelSize; y++ {
 			for x := 0; x < panelSize; x++ {
@@ -171,7 +191,7 @@ func (c *Client) readPump() {
 		if err != nil {
 			break
 		}
-		// Our protocol expects binary messages.
+		// Expect binary messages.
 		if msgType != websocket.BinaryMessage {
 			log.Println("Ignoring non-binary message")
 			continue
@@ -181,17 +201,18 @@ func (c *Client) readPump() {
 		}
 		switch data[0] {
 		case MsgTypeUpdate:
-			// Expect 7 bytes: type, panel, x, y, r, g, b.
-			if len(data) < 7 {
+			// Expect 5 bytes: type, panel (2), x, y.
+			if len(data) < 5 {
 				log.Println("Invalid update message length")
 				continue
 			}
-			panel := int(data[1])
-			x := int(data[2])
-			y := int(data[3])
-			rVal := data[4]
-			gVal := data[5]
-			bVal := data[6]
+			panel := int(binary.BigEndian.Uint16(data[1:3]))
+			x := int(data[3])
+			y := int(data[4])
+			// Use the client’s assigned color.
+			rVal := c.color.R
+			gVal := c.color.G
+			bVal := c.color.B
 
 			if panel < 0 || panel >= numPanels || x < 0 || x >= panelSize || y < 0 || y >= panelSize {
 				log.Println("Invalid update parameters")
@@ -210,35 +231,39 @@ func (c *Client) readPump() {
 			panelMutex.Unlock()
 
 			// Broadcast update to all clients.
-			// Broadcast message (15 bytes): type, panel, x, y, r, g, b, timestamp (8 bytes).
-			bcast := make([]byte, 15)
+			// Broadcast message (16 bytes): type, panel (2), x, y, r, g, b, timestamp (8 bytes).
+			bcast := make([]byte, 16)
 			bcast[0] = MsgTypeBroadcast
-			bcast[1] = byte(panel)
-			bcast[2] = byte(x)
-			bcast[3] = byte(y)
-			bcast[4] = rVal
-			bcast[5] = gVal
-			bcast[6] = bVal
-			binary.BigEndian.PutUint64(bcast[7:], uint64(now))
+			binary.BigEndian.PutUint16(bcast[1:3], uint16(panel))
+			bcast[3] = byte(x)
+			bcast[4] = byte(y)
+			bcast[5] = rVal
+			bcast[6] = gVal
+			bcast[7] = bVal
+			binary.BigEndian.PutUint64(bcast[8:], uint64(now))
 			c.hub.broadcast <- OutgoingMessage{messageType: websocket.BinaryMessage, data: bcast}
 
-			// Send an acknowledgment back (2 bytes).
+			// Send an acknowledgment (2 bytes).
 			ack := []byte{MsgTypeUpdateAck, 1}
 			c.send <- OutgoingMessage{messageType: websocket.BinaryMessage, data: ack}
 
 		case MsgTypeRequest:
-			// (Not used in this example, but here for completeness.)
-			if len(data) < 2 {
+			// Expect 3 bytes: type, panel (2)
+			if len(data) < 3 {
 				log.Println("Invalid request message length")
 				continue
 			}
-			panel := int(data[1])
+			panel := int(binary.BigEndian.Uint16(data[1:3]))
 			if panel < 0 || panel >= numPanels {
 				log.Println("Invalid panel number in request")
 				continue
 			}
-			buf := make([]byte, panelSize*panelSize*3)
-			idx := 0
+			log.Printf("Panel sync requested for panel %d\n", panel)
+			// Allocate buffer with header: 3 bytes header + pixel data.
+			buf := make([]byte, 3+panelSize*panelSize*3)
+			buf[0] = MsgTypePanelSync
+			binary.BigEndian.PutUint16(buf[1:3], uint16(panel))
+			idx := 3
 			panelMutex.RLock()
 			for y := 0; y < panelSize; y++ {
 				for x := 0; x < panelSize; x++ {
@@ -273,6 +298,7 @@ func (c *Client) writePump() {
 				return
 			}
 			if err := c.conn.WriteMessage(m.messageType, m.data); err != nil {
+				log.Println("Write error:", err)
 				return
 			}
 		case <-ticker.C:
@@ -285,13 +311,16 @@ func (c *Client) writePump() {
 }
 
 func main() {
+	// Seed the random number generator.
+	rand.Seed(time.Now().UnixNano())
+
 	hub := newHub()
 	go hub.run()
 
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		serveWs(hub, w, r)
 	})
-	// Serve static files (including index.html) from the current directory.
+	// Serve static files (including index.html) from "./dist".
 	fs := http.FileServer(http.Dir("./dist"))
 	http.Handle("/", fs)
 
