@@ -17,7 +17,7 @@ function CanvasPanel({ panel, ws, userColor, onMount }) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!ws) return;
 
     const observer = new IntersectionObserver(
       (entries) => {

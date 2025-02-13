@@ -17,9 +17,6 @@ function App() {
 
   // Establish the WebSocket connection using a relative URL.
   useEffect(() => {
-    if (ws) {
-      return;
-    }
     const loc = window.location;
     const wsProtocol = loc.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProtocol}//${loc.host}/ws`;
@@ -27,6 +24,7 @@ function App() {
     websocket.binaryType = "arraybuffer";
     websocket.onopen = () => {
       console.log("Connected to websocket");
+      setWs(websocket);
     };
     websocket.onerror = (err) => {
       console.error("WebSocket error:", err);
@@ -84,7 +82,7 @@ function App() {
         }
       }
     };
-    setWs(websocket);
+
     return () => {
       if (websocket.readyState === WebSocket.OPEN) {
         websocket.close();
