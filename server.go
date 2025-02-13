@@ -345,7 +345,7 @@ func snapshotPanels() {
 	panelMutex.RUnlock()
 
 	timestamp := time.Now().Unix()
-	filename := fmt.Sprintf("Users/Shared/data/%d.png", timestamp)
+	filename := fmt.Sprintf("/Users/Shared/data/%d.png", timestamp)
 	f, err := os.Create(filename)
 	if err != nil {
 		log.Printf("Error creating snapshot file: %v", err)
@@ -360,10 +360,10 @@ func snapshotPanels() {
 	log.Printf("Snapshot saved: %s", filename)
 }
 
-// loadLatestSnapshot loads the most recent PNG snapshot from the /data directory
+// loadLatestSnapshot loads the most recent PNG snapshot from the data directory
 // and updates the panels.
 func loadLatestSnapshot() {
-	files, err := os.ReadDir("/data")
+	files, err := os.ReadDir("/Users/Shared/data")
 	if err != nil {
 		log.Printf("Error reading data directory: %v", err)
 		return
@@ -383,7 +383,7 @@ func loadLatestSnapshot() {
 	}
 	sort.Strings(snapshots)
 	latest := snapshots[len(snapshots)-1]
-	path := filepath.Join("Users/Shared/data", latest)
+	path := filepath.Join("/Users/Shared/data", latest)
 	f, err := os.Open(path)
 	if err != nil {
 		log.Printf("Error opening snapshot file: %v", err)
@@ -434,7 +434,7 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	// Ensure the data directory exists.
-	if err := os.MkdirAll("Users/Shared/data", 0755); err != nil {
+	if err := os.MkdirAll("/Users/Shared/data", 0755); err != nil {
 		log.Fatalf("Error creating data directory: %v", err)
 	}
 
