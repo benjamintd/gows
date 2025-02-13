@@ -1,3 +1,4 @@
+import pako from "pako";
 import React, { useEffect, useRef, useState } from "react";
 import CanvasPanel from "./CanvasPanel";
 
@@ -60,22 +61,30 @@ function App() {
           ctx.fillRect(x, y, 1, 1);
         }
       }
-      // Handle full panel sync messages (3-byte header + 128×128×3 bytes).
-      else if (
-        msgType === 5 &&
-        buffer.byteLength === 3 + CANVAS_SIZE * CANVAS_SIZE * 3
-      ) {
+      // Handle full panel sync messages (3-byte header + deflated panel).
+      else if (msgType === 5) {
         const panel = view.getUint16(1);
         const canvas = canvasesRef.current[panel];
         if (canvas) {
+          // Get the compressed data as a Uint8Array.
+          // Use the original ArrayBuffer and start at offset 3.
+          const compressedData = new Uint8Array(buffer, 3);
+          console.log("Compressed data length:", compressedData.length);
+
+          // Decompress using pako (returns a Uint8Array)
+          const decompressedData = pako.inflate(compressedData, {
+            to: "Uint8Array",
+          });
+
+          // Now create the image data. decompressedData should have CANVAS_SIZE*CANVAS_SIZE*3 bytes.
           const ctx = canvas.getContext("2d");
           const imageData = ctx.createImageData(CANVAS_SIZE, CANVAS_SIZE);
-          let srcIdx = 3;
+          let srcIdx = 0;
           for (let i = 0; i < imageData.data.length; i += 4) {
-            imageData.data[i] = view.getUint8(srcIdx);
-            imageData.data[i + 1] = view.getUint8(srcIdx + 1);
-            imageData.data[i + 2] = view.getUint8(srcIdx + 2);
-            imageData.data[i + 3] = 255;
+            imageData.data[i] = decompressedData[srcIdx];
+            imageData.data[i + 1] = decompressedData[srcIdx + 1];
+            imageData.data[i + 2] = decompressedData[srcIdx + 2];
+            imageData.data[i + 3] = 255; // opaque alpha
             srcIdx += 3;
           }
           ctx.putImageData(imageData, 0, 0);

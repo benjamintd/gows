@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/zlib"
 	"encoding/binary"
 	"fmt"
 	"image"
@@ -81,7 +83,6 @@ func newHub() *Hub {
 		unregister: make(chan *Client),
 	}
 }
-
 func (h *Hub) run() {
 	for {
 		select {
@@ -93,16 +94,19 @@ func (h *Hub) run() {
 			h.mu.Lock()
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
-				close(client.send)
+				// DO NOT close(client.send) here.
 			}
 			h.mu.Unlock()
 		case message := <-h.broadcast:
 			h.mu.Lock()
 			for client := range h.clients {
+				// Non-blocking send. If the send would block, drop the message.
 				select {
 				case client.send <- message:
+					// message sent successfully
 				default:
-					close(client.send)
+					// Optionally, you can close the connection if the client is too slow.
+					// client.conn.Close()
 					delete(h.clients, client)
 				}
 			}
@@ -154,32 +158,12 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	go client.readPump()
 }
 
-// syncPanels sends a full-panel sync for a client.
-// Message layout:
-//
-//	Byte 0: MsgTypePanelSync (5)
-//	Bytes 1-2: Panel number (uint16)
-//	Bytes 3...: 128×128×3 bytes of pixel data.
-func syncPanels(c *Client) {
-	for panel := 0; panel < numPanels; panel++ {
-		buf := make([]byte, 3+panelSize*panelSize*3)
-		buf[0] = MsgTypePanelSync
-		binary.BigEndian.PutUint16(buf[1:3], uint16(panel))
-		log.Printf("Sending full sync for panel %d to client\n", panel)
-		idx := 3
-		panelMutex.RLock()
-		for y := 0; y < panelSize; y++ {
-			for x := 0; x < panelSize; x++ {
-				p := panels[panel][y][x]
-				buf[idx] = p.R
-				buf[idx+1] = p.G
-				buf[idx+2] = p.B
-				idx += 3
-			}
-		}
-		panelMutex.RUnlock()
-		c.send <- OutgoingMessage{messageType: websocket.BinaryMessage, data: buf}
-	}
+func compressPanelData(rawData []byte) []byte {
+	var buf bytes.Buffer
+	w := zlib.NewWriter(&buf)
+	w.Write(rawData)
+	w.Close()
+	return buf.Bytes()
 }
 
 func (c *Client) readPump() {
@@ -261,28 +245,37 @@ func (c *Client) readPump() {
 				log.Println("Invalid request message length")
 				continue
 			}
-			panel := int(binary.BigEndian.Uint16(data[1:3]))
-			if panel < 0 || panel >= numPanels {
+			panelNum := int(binary.BigEndian.Uint16(data[1:3]))
+			if panelNum < 0 || panelNum >= numPanels {
 				log.Println("Invalid panel number in request")
 				continue
 			}
-			log.Printf("Panel sync requested for panel %d\n", panel)
-			// Allocate buffer with header: 3 bytes header + pixel data.
-			buf := make([]byte, 3+panelSize*panelSize*3)
-			buf[0] = MsgTypePanelSync
-			binary.BigEndian.PutUint16(buf[1:3], uint16(panel))
-			idx := 3
+			log.Printf("Panel sync requested for panel %d\n", panelNum)
+
+			// Create a byte slice with just the RGB data.
+			rawData := make([]byte, panelSize*panelSize*3)
+			idx := 0
 			panelMutex.RLock()
 			for y := 0; y < panelSize; y++ {
 				for x := 0; x < panelSize; x++ {
-					p := panels[panel][y][x]
-					buf[idx] = p.R
-					buf[idx+1] = p.G
-					buf[idx+2] = p.B
+					p := panels[panelNum][y][x]
+					rawData[idx] = p.R
+					rawData[idx+1] = p.G
+					rawData[idx+2] = p.B
 					idx += 3
 				}
 			}
 			panelMutex.RUnlock()
+
+			// Compress the raw RGB data.
+			compressedData := compressPanelData(rawData)
+
+			// Build the message: 3-byte header + compressed data.
+			buf := make([]byte, 3+len(compressedData))
+			buf[0] = MsgTypePanelSync
+			binary.BigEndian.PutUint16(buf[1:3], uint16(panelNum))
+			copy(buf[3:], compressedData)
+
 			c.send <- OutgoingMessage{messageType: websocket.BinaryMessage, data: buf}
 
 		default:
