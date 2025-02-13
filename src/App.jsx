@@ -17,6 +17,9 @@ function App() {
 
   // Establish the WebSocket connection using a relative URL.
   useEffect(() => {
+    if (ws) {
+      return;
+    }
     const loc = window.location;
     const wsProtocol = loc.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProtocol}//${loc.host}/ws`;

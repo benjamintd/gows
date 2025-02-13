@@ -17,13 +17,15 @@ function CanvasPanel({ panel, ws, userColor, onMount }) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting) {
+            console.log("entries", panel);
             // Build and send a 3-byte request message:
-            //  Byte 0: MsgTypeRequest (2)
-            //  Bytes 1-2: panel number (uint16, BigEndian)
+            //   Byte 0: MsgTypeRequest (2)
+            //   Bytes 1-2: panel number (uint16, BigEndian)
             if (ws && ws.readyState === WebSocket.OPEN) {
               const buffer = new ArrayBuffer(3);
               const view = new DataView(buffer);
@@ -37,6 +39,21 @@ function CanvasPanel({ panel, ws, userColor, onMount }) {
       { threshold: 0.1 }
     );
     observer.observe(canvas);
+    // Force check immediately for any pending intersection records.
+    const initialRecords = observer.takeRecords();
+    initialRecords.forEach((entry) => {
+      if (entry.isIntersecting) {
+        console.log("initial", panel);
+
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          const buffer = new ArrayBuffer(3);
+          const view = new DataView(buffer);
+          view.setUint8(0, 2); // MsgTypeRequest
+          view.setUint16(1, panel);
+          ws.send(buffer);
+        }
+      }
+    });
     return () => observer.disconnect();
   }, [ws, panel]);
 
@@ -56,10 +73,10 @@ function CanvasPanel({ panel, ws, userColor, onMount }) {
     ctx.fillRect(x, y, 1, 1);
 
     // Prepare a 5-byte update message:
-    //  Byte 0: MsgTypeUpdate (1)
-    //  Bytes 1-2: panel number (uint16, BigEndian)
-    //  Byte 3: x-coordinate
-    //  Byte 4: y-coordinate
+    //   Byte 0: MsgTypeUpdate (1)
+    //   Bytes 1-2: panel number (uint16, BigEndian)
+    //   Byte 3: x-coordinate
+    //   Byte 4: y-coordinate
     const buffer = new ArrayBuffer(5);
     const view = new DataView(buffer);
     view.setUint8(0, 1); // MsgTypeUpdate
@@ -73,12 +90,12 @@ function CanvasPanel({ panel, ws, userColor, onMount }) {
 
   return (
     <canvas
-      className="w-full h-full image-rendering-pixelated"
       ref={canvasRef}
       width={128}
       height={128}
       data-panel={panel}
       onMouseMove={handleMouseMove}
+      className="w-full h-full image-rendering-pixelated"
     />
   );
 }

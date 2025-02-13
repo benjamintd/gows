@@ -2,9 +2,16 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -24,7 +31,7 @@ const (
 	MsgTypeRequest     = 2 // Client → Server: 3 bytes: type, panel (2)
 	MsgTypeUpdateAck   = 3 // Server → Client: 2 bytes: type, result.
 	MsgTypeBroadcast   = 4 // Server → Client: 16 bytes: type, panel (2), x, y, r, g, b, timestamp (8 bytes).
-	MsgTypePanelSync   = 5 // Server → Client: 3-byte header (type, panel (2)) + 128×128×3 bytes of raw RGB.
+	MsgTypePanelSync   = 5 // Server → Client: 3-byte header (type, panel (2)) + 128×128×3 bytes.
 	MsgTypeAssignColor = 6 // Server → Client: 4 bytes: type, r, g, b.
 )
 
@@ -147,11 +154,12 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	go client.readPump()
 }
 
-// syncPanels sends a full-panel sync for every panel.
+// syncPanels sends a full-panel sync for a client.
 // Message layout:
-//   Byte 0: MsgTypePanelSync (5)
-//   Bytes 1-2: Panel number (uint16)
-//   Bytes 3...: 128×128×3 bytes of pixel data.
+//
+//	Byte 0: MsgTypePanelSync (5)
+//	Bytes 1-2: Panel number (uint16)
+//	Bytes 3...: 128×128×3 bytes of pixel data.
 func syncPanels(c *Client) {
 	for panel := 0; panel < numPanels; panel++ {
 		buf := make([]byte, 3+panelSize*panelSize*3)
@@ -310,12 +318,140 @@ func (c *Client) writePump() {
 	}
 }
 
+// snapshotPanels creates a combined PNG snapshot of all panels arranged in a grid.
+// In this example, we assume 28 columns and 30 rows (28*30=840).
+func snapshotPanels() {
+	const cols = 28
+	const rows = 30
+	width := cols * panelSize
+	height := rows * panelSize
+
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+
+	panelMutex.RLock()
+	for i := 0; i < numPanels; i++ {
+		col := i % cols
+		row := i / cols
+		xOffset := col * panelSize
+		yOffset := row * panelSize
+		for y := 0; y < panelSize; y++ {
+			for x := 0; x < panelSize; x++ {
+				p := panels[i][y][x]
+				c := color.RGBA{R: p.R, G: p.G, B: p.B, A: 255}
+				img.Set(xOffset+x, yOffset+y, c)
+			}
+		}
+	}
+	panelMutex.RUnlock()
+
+	timestamp := time.Now().Unix()
+	filename := fmt.Sprintf("Users/Shared/data/%d.png", timestamp)
+	f, err := os.Create(filename)
+	if err != nil {
+		log.Printf("Error creating snapshot file: %v", err)
+		return
+	}
+	defer f.Close()
+
+	if err := png.Encode(f, img); err != nil {
+		log.Printf("Error encoding PNG: %v", err)
+		return
+	}
+	log.Printf("Snapshot saved: %s", filename)
+}
+
+// loadLatestSnapshot loads the most recent PNG snapshot from the /data directory
+// and updates the panels.
+func loadLatestSnapshot() {
+	files, err := os.ReadDir("/data")
+	if err != nil {
+		log.Printf("Error reading data directory: %v", err)
+		return
+	}
+	var snapshots []string
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		if filepath.Ext(file.Name()) == ".png" {
+			snapshots = append(snapshots, file.Name())
+		}
+	}
+	if len(snapshots) == 0 {
+		log.Println("No snapshot found.")
+		return
+	}
+	sort.Strings(snapshots)
+	latest := snapshots[len(snapshots)-1]
+	path := filepath.Join("Users/Shared/data", latest)
+	f, err := os.Open(path)
+	if err != nil {
+		log.Printf("Error opening snapshot file: %v", err)
+		return
+	}
+	defer f.Close()
+
+	img, err := png.Decode(f)
+	if err != nil {
+		log.Printf("Error decoding snapshot PNG: %v", err)
+		return
+	}
+
+	// Expect dimensions to match grid.
+	const cols = 28
+	const rows = 30
+	expectedWidth := cols * panelSize
+	expectedHeight := rows * panelSize
+	bounds := img.Bounds()
+	if bounds.Dx() != expectedWidth || bounds.Dy() != expectedHeight {
+		log.Printf("Snapshot dimensions (%d x %d) do not match expected (%d x %d)",
+			bounds.Dx(), bounds.Dy(), expectedWidth, expectedHeight)
+		return
+	}
+
+	panelMutex.Lock()
+	defer panelMutex.Unlock()
+	for i := 0; i < numPanels; i++ {
+		col := i % cols
+		row := i / cols
+		xOffset := col * panelSize
+		yOffset := row * panelSize
+		for y := 0; y < panelSize; y++ {
+			for x := 0; x < panelSize; x++ {
+				c := color.RGBAModel.Convert(img.At(xOffset+x, yOffset+y)).(color.RGBA)
+				panels[i][y][x].R = c.R
+				panels[i][y][x].G = c.G
+				panels[i][y][x].B = c.B
+				panels[i][y][x].Timestamp = 0
+			}
+		}
+	}
+	log.Printf("Loaded snapshot from %s", path)
+}
+
 func main() {
 	// Seed the random number generator.
 	rand.Seed(time.Now().UnixNano())
 
+	// Ensure the data directory exists.
+	if err := os.MkdirAll("Users/Shared/data", 0755); err != nil {
+		log.Fatalf("Error creating data directory: %v", err)
+	}
+
+	// On startup, load the latest snapshot if available.
+	loadLatestSnapshot()
+
 	hub := newHub()
 	go hub.run()
+
+	// Start a ticker to snapshot panels every 5 minutes.
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			snapshotPanels()
+		}
+	}()
 
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		serveWs(hub, w, r)
