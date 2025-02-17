@@ -101,16 +101,14 @@ function App() {
 
   return (
     <div className="min-h-screen flex flex-col items-center bg-black">
-      <div className="m-6">
-        {assignedColor && (
-          <div
-            className="fixed top-6 mx-auto w-12 h-6 rounded-lg border border-white"
-            style={{
-              backgroundColor: `rgb(${assignedColor.r}, ${assignedColor.g}, ${assignedColor.b})`,
-            }}
-          />
-        )}
-      </div>
+      {assignedColor && (
+        <div
+          className="fixed top-6 mx-auto w-12 h-6 rounded-lg border border-white"
+          style={{
+            backgroundColor: `rgb(${assignedColor.r}, ${assignedColor.g}, ${assignedColor.b})`,
+          }}
+        />
+      )}
       {/* Grid layout: adjust as needed */}
       <div className="w-full grid grid-cols-3 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-8 gap-0">
         {Array.from({ length: NUM_PANELS }).map((_, i) => (
