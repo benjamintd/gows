@@ -96,7 +96,8 @@ function CanvasPanel({ panel, ws, userColor, onMount }) {
       height={128}
       data-panel={panel}
       onMouseMove={handleMouseMove}
-      className="w-full h-full image-rendering-pixelated"
+      style={{ imageRendering: "pixelated" }}
+      className="w-full h-full"
     />
   );
 }

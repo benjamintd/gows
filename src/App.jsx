@@ -110,7 +110,7 @@ function App() {
         />
       )}
       {/* Grid layout: adjust as needed */}
-      <div className="w-full grid grid-cols-3 md:grid-cols-5 lg:grid-cols-7 xl:grid-cols-8 gap-0">
+      <div className="w-full grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-7 gap-0">
         {Array.from({ length: NUM_PANELS }).map((_, i) => (
           <CanvasPanel
             key={i}
