@@ -5,6 +5,7 @@ import (
 	"compress/zlib"
 	"encoding/binary"
 	"fmt"
+	"golang.org/x/time/rate"
 	"image"
 	"image/color"
 	"image/png"
@@ -64,6 +65,7 @@ type Client struct {
 	color struct {
 		R, G, B byte
 	}
+	limiter *rate.Limiter
 }
 
 // Hub maintains the set of connected clients.
@@ -74,9 +76,6 @@ type Hub struct {
 	unregister chan *Client
 	mu         sync.Mutex
 }
-
-
-
 
 func newHub() *Hub {
 	return &Hub{
@@ -148,6 +147,8 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	client.color.G = byte(rand.Intn(256))
 	client.color.B = byte(rand.Intn(256))
 
+	client.limiter = rate.NewLimiter(50, 200) // 50 messages per second, burst up to 200.
+
 	// Send an assign-color message (4 bytes: type, r, g, b).
 	assignMsg := make([]byte, 4)
 	assignMsg[0] = MsgTypeAssignColor
@@ -186,6 +187,16 @@ func (c *Client) readPump() {
 	})
 
 	for {
+		// Check if the client is allowed to process a new message.
+		if !c.limiter.Allow() {
+			log.Println("Rate limit exceeded for client, disconnecting")
+			closeMsg := websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "rate limit exceeded")
+			// Send the close message to the writePump
+			c.send <- OutgoingMessage{messageType: websocket.CloseMessage, data: closeMsg}
+			// Exit readPump, which will trigger cleanup.
+			return
+		}
+
 		msgType, data, err := c.conn.ReadMessage()
 		if err != nil {
 			break
