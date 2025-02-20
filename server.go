@@ -75,6 +75,9 @@ type Hub struct {
 	mu         sync.Mutex
 }
 
+
+
+
 func newHub() *Hub {
 	return &Hub{
 		clients:    make(map[*Client]bool),
@@ -119,7 +122,11 @@ var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	// In production, check the origin as needed.
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		fmt.Println("Origin:", origin)
+		return origin == "https://pxpxpx.xyz" || origin == "http://localhost:8080"
+	},
 }
 
 // serveWs upgrades the HTTP connection to a websocket, assigns a random color,
