@@ -193,7 +193,7 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		hub:     hub,
 		conn:    conn,
 		send:    make(chan OutgoingMessage, 256),
-		limiter: rate.NewLimiter(20, 20), // Adjust rate limiter for update messages as needed.
+		limiter: rate.NewLimiter(150, 300), // Adjust rate limiter for update messages as needed.
 	}
 	// Assign a random color.
 	client.color.R = byte(rand.Intn(256))
