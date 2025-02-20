@@ -147,7 +147,7 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	client.color.G = byte(rand.Intn(256))
 	client.color.B = byte(rand.Intn(256))
 
-	client.limiter = rate.NewLimiter(50, 200) // 50 messages per second, burst up to 200.
+	client.limiter = rate.NewLimiter(50, 100) // 50 messages per second, burst up to 100.
 
 	// Send an assign-color message (4 bytes: type, r, g, b).
 	assignMsg := make([]byte, 4)
@@ -187,16 +187,6 @@ func (c *Client) readPump() {
 	})
 
 	for {
-		// Check if the client is allowed to process a new message.
-		if !c.limiter.Allow() {
-			log.Println("Rate limit exceeded for client, disconnecting")
-			closeMsg := websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "rate limit exceeded")
-			// Send the close message to the writePump
-			c.send <- OutgoingMessage{messageType: websocket.CloseMessage, data: closeMsg}
-			// Exit readPump, which will trigger cleanup.
-			return
-		}
-
 		msgType, data, err := c.conn.ReadMessage()
 		if err != nil {
 			break
@@ -211,6 +201,15 @@ func (c *Client) readPump() {
 		}
 		switch data[0] {
 		case MsgTypeUpdate:
+			if !c.limiter.Allow() {
+				log.Println("Rate limit exceeded for client")
+				closeMsg := websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "rate limit exceeded")
+				// Send the close message to the writePump
+				c.send <- OutgoingMessage{messageType: websocket.CloseMessage, data: closeMsg}
+				// Exit readPump, which will trigger cleanup.
+				return
+			}
+
 			// Expect 5 bytes: type, panel (2), x, y.
 			if len(data) < 5 {
 				log.Println("Invalid update message length")
