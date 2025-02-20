@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/zlib"
 	"encoding/binary"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"golang.org/x/time/rate"
 	"image"
@@ -12,12 +14,12 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
 	"time"
-
 	"github.com/gorilla/websocket"
 )
 
@@ -128,9 +130,59 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+func verifyTurnstileToken(token, remoteip string) error {
+	fmt.Println("verifyTurnstileToken called")
+	secret := os.Getenv("TURNSTILE_SECRET")
+	fmt.Println("secret:", secret)
+	fmt.Println(os.Environ())
+	form := url.Values{}
+	form.Set("secret", secret)
+	form.Set("response", token)
+	if remoteip != "" {
+		form.Set("remoteip", remoteip)
+	}	
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.PostForm("https://challenges.cloudflare.com/turnstile/v0/siteverify", form)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Success     bool     `json:"success"`
+		ChallengeTS string   `json:"challenge_ts"`
+		Hostname    string   `json:"hostname"`
+		ErrorCodes  []string `json:"error-codes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		fmt.Println("Error decoding JSON:", err)
+		return err
+	}
+	if !result.Success {
+		fmt.Println("Turnstile verification failed:", result.ErrorCodes)
+		return errors.New("turnstile verification failed")
+	}
+	return nil
+}
+
 // serveWs upgrades the HTTP connection to a websocket, assigns a random color,
 // sends an assign-color message to the client, and registers the client.
 func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
+	fmt.Println("serveWs called")
+	// Extract the Turnstile token (the client should send it as a query parameter).
+	token := r.URL.Query().Get("cf-turnstile-response")
+	if token == "" {
+		http.Error(w, "Missing Turnstile token", http.StatusBadRequest)
+		return
+	}
+	// Verify the token with Cloudflare.
+	if err := verifyTurnstileToken(token, r.RemoteAddr); err != nil {
+		http.Error(w, "Turnstile verification failed: "+err.Error(), http.StatusForbidden)
+		return
+	}
+
+	// Proceed with the WebSocket upgrade if verification succeeds.
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("Upgrade error:", err)
@@ -138,29 +190,21 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	}
 	log.Println("Client connected")
 	client := &Client{
-		hub:  hub,
-		conn: conn,
-		send: make(chan OutgoingMessage, 256),
+		hub:     hub,
+		conn:    conn,
+		send:    make(chan OutgoingMessage, 256),
+		limiter: rate.NewLimiter(20, 20), // Adjust rate limiter for update messages as needed.
 	}
-	// Assign a random color to this client.
+	// Assign a random color.
 	client.color.R = byte(rand.Intn(256))
 	client.color.G = byte(rand.Intn(256))
 	client.color.B = byte(rand.Intn(256))
 
-	client.limiter = rate.NewLimiter(50, 100) // 50 messages per second, burst up to 100.
-
-	// Send an assign-color message (4 bytes: type, r, g, b).
-	assignMsg := make([]byte, 4)
-	assignMsg[0] = MsgTypeAssignColor
-	assignMsg[1] = client.color.R
-	assignMsg[2] = client.color.G
-	assignMsg[3] = client.color.B
+	// Send an assign-color message.
+	assignMsg := []byte{MsgTypeAssignColor, client.color.R, client.color.G, client.color.B}
 	client.send <- OutgoingMessage{messageType: websocket.BinaryMessage, data: assignMsg}
 
 	hub.register <- client
-
-	// (Optionally, you could send an initial full-panel sync here.)
-	// syncPanels(client)
 
 	go client.writePump()
 	go client.readPump()
@@ -202,12 +246,12 @@ func (c *Client) readPump() {
 		switch data[0] {
 		case MsgTypeUpdate:
 			if !c.limiter.Allow() {
-				log.Println("Rate limit exceeded for client")
-				closeMsg := websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "rate limit exceeded")
-				// Send the close message to the writePump
-				c.send <- OutgoingMessage{messageType: websocket.CloseMessage, data: closeMsg}
-				// Exit readPump, which will trigger cleanup.
-				return
+				// log.Println("Rate limit exceeded for client")
+				// closeMsg := websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "rate limit exceeded")
+				// // Send the close message to the writePump
+				// c.send <- OutgoingMessage{messageType: websocket.CloseMessage, data: closeMsg}
+				// // Exit readPump, which will trigger cleanup.
+				continue
 			}
 
 			// Expect 5 bytes: type, panel (2), x, y.

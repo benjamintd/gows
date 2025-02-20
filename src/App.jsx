@@ -1,6 +1,7 @@
 import pako from "pako";
 import React, { useEffect, useRef, useState } from "react";
 import CanvasPanel from "./CanvasPanel";
+import TurnstileWidget from "./TurnstileWidget";
 
 const NUM_PANELS = 840;
 const CANVAS_SIZE = 128;
@@ -8,6 +9,9 @@ const CANVAS_SIZE = 128;
 function App() {
   const [ws, setWs] = useState(null);
   const [assignedColor, setAssignedColor] = useState(null);
+  const [turnstileToken, setTurnstileToken] = useState(null);
+
+  console.log(turnstileToken);
   // Mapping of panel number to its canvas element.
   const canvasesRef = useRef([]);
 
@@ -16,11 +20,14 @@ function App() {
     canvasesRef.current[panel] = canvas;
   };
 
-  // Establish the WebSocket connection using a relative URL.
+  // Establish the WebSocket connection only after obtaining the Turnstile token.
   useEffect(() => {
+    if (!turnstileToken) return;
     const loc = window.location;
     const wsProtocol = loc.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${wsProtocol}//${loc.host}/ws`;
+    const wsUrl = `${wsProtocol}//${
+      loc.host
+    }/ws?cf-turnstile-response=${encodeURIComponent(turnstileToken)}`;
     const websocket = new WebSocket(wsUrl);
     websocket.binaryType = "arraybuffer";
     websocket.onopen = () => {
@@ -66,17 +73,11 @@ function App() {
         const panel = view.getUint16(1);
         const canvas = canvasesRef.current[panel];
         if (canvas) {
-          // Get the compressed data as a Uint8Array.
-          // Use the original ArrayBuffer and start at offset 3.
           const compressedData = new Uint8Array(buffer, 3);
           console.log("Compressed data length:", compressedData.length);
-
-          // Decompress using pako (returns a Uint8Array)
           const decompressedData = pako.inflate(compressedData, {
             to: "Uint8Array",
           });
-
-          // Now create the image data. decompressedData should have CANVAS_SIZE*CANVAS_SIZE*3 bytes.
           const ctx = canvas.getContext("2d");
           const imageData = ctx.createImageData(CANVAS_SIZE, CANVAS_SIZE);
           let srcIdx = 0;
@@ -84,7 +85,7 @@ function App() {
             imageData.data[i] = decompressedData[srcIdx];
             imageData.data[i + 1] = decompressedData[srcIdx + 1];
             imageData.data[i + 2] = decompressedData[srcIdx + 2];
-            imageData.data[i + 3] = 255; // opaque alpha
+            imageData.data[i + 3] = 255;
             srcIdx += 3;
           }
           ctx.putImageData(imageData, 0, 0);
@@ -97,31 +98,45 @@ function App() {
         websocket.close();
       }
     };
-  }, []);
+  }, [turnstileToken]);
 
   return (
     <div className="min-h-screen flex flex-col items-center bg-black">
-      {assignedColor && (
-        <div
-          className="fixed top-6 mx-auto w-12 h-6 rounded-lg border border-white"
-          style={{
-            backgroundColor: `rgb(${assignedColor.r}, ${assignedColor.g}, ${assignedColor.b})`,
-          }}
-        />
-      )}
-      {/* Grid layout: adjust as needed */}
-      <div className="w-full grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-7 gap-0">
-        {Array.from({ length: NUM_PANELS }).map((_, i) => (
-          <CanvasPanel
-            key={i}
-            panel={i}
-            ws={ws}
-            // Pass the assigned color once received, or a default if not yet assigned.
-            userColor={assignedColor || { r: 255, g: 255, b: 255 }}
-            onMount={handleCanvasMount}
+      {/* If no Turnstile token is set, show the widget */}
+      {!turnstileToken ? (
+        <div className="mt-20">
+          <TurnstileWidget
+            onVerify={(token) => {
+              console.log("Turnstile token received:", token);
+              setTurnstileToken(token);
+            }}
           />
-        ))}
-      </div>
+        </div>
+      ) : (
+        <>
+          {assignedColor && (
+            <div
+              className="fixed top-6 mx-auto w-12 h-6 rounded-lg border border-white"
+              style={{
+                backgroundColor: `rgb(${assignedColor.r}, ${assignedColor.g}, ${assignedColor.b})`,
+              }}
+            />
+          )}
+          {/* Grid layout: adjust as needed */}
+          <div className="w-full grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-7 gap-0">
+            {Array.from({ length: NUM_PANELS }).map((_, i) => (
+              <CanvasPanel
+                key={i}
+                panel={i}
+                ws={ws}
+                // Pass the assigned color once received, or a default if not yet assigned.
+                userColor={assignedColor || { r: 255, g: 255, b: 255 }}
+                onMount={handleCanvasMount}
+              />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
